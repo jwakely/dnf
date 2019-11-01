@@ -1840,9 +1840,9 @@ class Base(object):
         for spec in install_specs.pkg_specs:
             try:
                 self.install(spec, reponame=reponame, strict=strict, forms=forms)
-            except dnf.exceptions.MarkingError:
-                msg = _('No match for argument: %s')
-                logger.error(msg, spec)
+            except dnf.exceptions.MarkingError as e:
+                msg = '{}: {}'.format(e.value, self.base.output.term.bold(spec))
+                logger.error(msg)
                 no_match_pkg_specs.append(spec)
         no_match_module_specs = []
         module_depsolv_errors = ()
@@ -1887,8 +1887,7 @@ class Base(object):
             if reponame is not None:
                 q.filterm(reponame=reponame)
             if not q:
-                raise dnf.exceptions.PackageNotFoundError(
-                    _('no package matched'), pkg_spec)
+                self._raise_package_not_found_error(pkg_spec, forms, reponame)
             return self._install_multiarch(q, reponame=reponame, strict=strict)
 
         elif self.conf.multilib_policy == "best":
@@ -1899,7 +1898,7 @@ class Base(object):
                                              reports=True,
                                              solution=solution)
             if not sltrs:
-                raise dnf.exceptions.MarkingError(_('no package matched'), pkg_spec)
+                self._raise_package_not_found_error(pkg_spec, forms, reponame)
 
             for sltr in sltrs:
                 self._goal.install(select=sltr, optional=(not strict))
@@ -2499,6 +2498,31 @@ class Base(object):
     def _report_already_installed(self, packages):
         for pkg in packages:
             _msg_installed(pkg)
+
+    def _raise_package_not_found_error(self, pkg_spec, forms, reponame):
+        all_query = self.sack.query(flags=hawkey.IGNORE_EXCLUDES)
+        subject = dnf.subject.Subject(pkg_spec)
+        solution = subject.get_best_solution(
+            self.sack, forms=forms, with_src=False, query=all_query)
+        if reponame is not None:
+            solution['query'].filterm(reponame=reponame)
+        if not solution['query']:
+            raise dnf.exceptions.PackageNotFoundError(_('No match for argument'), pkg_spec)
+        else:
+            with_modular_query = self.sack.query(flags=hawkey.IGNORE_MODULAR_EXCLUDES)
+            with_modular_query = solution['query'].intersection(with_modular_query)
+            with_regular_query = self.sack.query(flags=hawkey.IGNORE_REGULAR_EXCLUDES)
+            with_regular_query = solution['query'].intersection(with_regular_query)
+            if with_modular_query and with_regular_query:
+                msg = _('All matches were excluded by regular and modular filtering for argument')
+            elif with_regular_query:
+                msg = _('All matches were excluded by regular filtering for argument')
+            elif with_modular_query:
+                msg = _('All matches were excluded by modular filtering for argument')
+            else:
+                msg = _('Argument matched only with source RPMs')
+            raise dnf.exceptions.PackageNotFoundError(msg, pkg_spec)
+
 
 def _msg_installed(pkg):
     name = ucd(pkg)
